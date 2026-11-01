@@ -27,12 +27,19 @@ const {
 
 const PORT = process.env.PORT || 4000;
 
+const ALLOWED_ORIGINS = (process.env.CLIENT_ORIGINS || 'http://localhost:5173')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+const corsOptions = { origin: ALLOWED_ORIGINS };
+
 const app = express();
-app.use(cors());
+app.use(cors(corsOptions));
 
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
-  cors: { origin: '*' },
+  cors: corsOptions,
 });
 
 io.on('connection', (socket) => {
