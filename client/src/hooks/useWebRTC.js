@@ -1,6 +1,17 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
-const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  {
+    urls: [
+      import.meta.env.VITE_TURN_URL_UDP,
+      import.meta.env.VITE_TURN_URL_TCP,
+      import.meta.env.VITE_TURN_URL_TLS,
+    ].filter(Boolean),
+    username: import.meta.env.VITE_TURN_USERNAME,
+    credential: import.meta.env.VITE_TURN_CREDENTIAL,
+  },
+];
 
 const MEDIA_CONSTRAINTS = {
   audio: { echoCancellation: true, noiseSuppression: true },
@@ -196,7 +207,7 @@ export function useWebRTC({ name, roomId, socket }) {
           });
           if (active) setCameraOn(false);
         } catch (err2) {
-          if (active) setMediaError('Camera/mic unavailable. Whiteboard still works.');
+          if (active) setMediaError(`Camera/mic unavailable (${err2.name}). Whiteboard still works.`);
         }
       }
 
