@@ -139,6 +139,7 @@ export default function Room({ name, roomId, initialState, onLeave }) {
           mode={mode}
           roomId={roomId}
           initialStrokes={initialState?.strokes}
+          userName={name}
         />
         <Toolbar
           color={color}

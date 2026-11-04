@@ -13,6 +13,9 @@ const {
   addStrokeStart,
   addStrokePoints,
   addStrokeEnd,
+  addElement,
+  updateElement,
+  deleteElement,
   clearRoom,
   addAiMessage,
   getAiHistory,
@@ -121,7 +124,7 @@ io.on('connection', (socket) => {
     try {
       const history = getAiHistory(currentRoom);
       const messages = [
-          {
+        {
           role: 'system',
           content:
             'You are a concise tutor for computer science students. Answer clearly in under 200 words. ' +
@@ -152,12 +155,12 @@ io.on('connection', (socket) => {
     }
   });
 
-    // Newcomer finished setting up media → tell the existing user to send the offer
+  // Newcomer finished setting up media → tell the existing user to send the offer
   socket.on('call-ready', () => {
     if (!currentRoom) return;
     socket.to(currentRoom).emit('user-joined', { socketId: socket.id });
   });
-  
+
   // WebRTC signaling relays — server only forwards, never stores
   socket.on('webrtc-offer', ({ sdp, to }) => {
     socket.to(to).emit('webrtc-offer', { sdp, from: socket.id });
@@ -193,22 +196,58 @@ io.on('connection', (socket) => {
     socket.to(currentRoom).emit('stroke-end');
   });
 
+  socket.on('add-element', (element) => {
+    if (!currentRoom) return;
+    addElement(currentRoom, element);
+    socket.to(currentRoom).emit('add-element', element);
+  });
+
+  socket.on('update-element', (element) => {
+    if (!currentRoom) return;
+    updateElement(currentRoom, element);
+    socket.to(currentRoom).emit('update-element', element);
+  });
+
+  socket.on('delete-element', ({ id }) => {
+    if (!currentRoom) return;
+    deleteElement(currentRoom, id);
+    socket.to(currentRoom).emit('delete-element', { id });
+  });
+
+  socket.on('cursor-move', (data) => {
+    if (!currentRoom) return;
+    socket.to(currentRoom).emit('remote-cursor', {
+      ...data,
+      userId: socket.id,
+      name: getUserName(currentRoom, socket.id),
+      slot: getUserSlot(currentRoom, socket.id),
+    });
+  });
+
+  socket.on('cursor-leave', () => {
+    if (!currentRoom) return;
+    socket.to(currentRoom).emit('remote-cursor-leave', { userId: socket.id });
+  });
+
   socket.on('clear-board', () => {
     if (!currentRoom) return;
     clearRoom(currentRoom);
     io.to(currentRoom).emit('clear-board');
   });
-    socket.on('leave-room', () => {
+
+  socket.on('leave-room', () => {
     if (!currentRoom) return;
     const roomId = currentRoom;
+    socket.to(roomId).emit('remote-cursor-leave', { userId: socket.id });
     socket.leave(roomId);
     leaveRoom(roomId, socket.id);
     currentRoom = null;
     io.to(roomId).emit('user-count', { count: getUserCount(roomId) });
   });
-  
+
   socket.on('disconnect', () => {
     if (!currentRoom) return;
+    socket.to(currentRoom).emit('remote-cursor-leave', { userId: socket.id });
     leaveRoom(currentRoom, socket.id);
     io.to(currentRoom).emit('user-count', { count: getUserCount(currentRoom) });
   });
