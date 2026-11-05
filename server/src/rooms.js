@@ -87,18 +87,46 @@ function getUserCount(roomId) {
 function addStrokeStart(roomId, color, size) {
   const room = rooms.get(roomId);
   if (!room) return;
-  room.strokes.push({ color, size, points: [] });
+  room.strokes.push({
+    id: `stroke-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    color,
+    size,
+    points: [],
+  });
 }
 
 function addStrokePoints(roomId, points) {
   const room = rooms.get(roomId);
   if (!room || room.strokes.length === 0) return;
   const current = room.strokes[room.strokes.length - 1];
-  current.points.push(...points);
+  if (current.points) {
+    current.points.push(...points);
+  }
 }
 
 function addStrokeEnd(roomId) {
   // Stroke is already in place; nothing extra needed.
+}
+
+function addElement(roomId, element) {
+  const room = rooms.get(roomId);
+  if (!room || !element) return;
+  room.strokes.push(element);
+}
+
+function updateElement(roomId, updatedElement) {
+  const room = rooms.get(roomId);
+  if (!room || !updatedElement || !updatedElement.id) return;
+  const idx = room.strokes.findIndex((s) => s.id === updatedElement.id);
+  if (idx !== -1) {
+    room.strokes[idx] = { ...room.strokes[idx], ...updatedElement };
+  }
+}
+
+function deleteElement(roomId, elementId) {
+  const room = rooms.get(roomId);
+  if (!room || !elementId) return;
+  room.strokes = room.strokes.filter((s) => s.id !== elementId);
 }
 
 function clearRoom(roomId) {
@@ -134,6 +162,9 @@ module.exports = {
   addStrokeStart,
   addStrokePoints,
   addStrokeEnd,
+  addElement,
+  updateElement,
+  deleteElement,
   clearRoom,
   addAiMessage,
   getAiHistory,
