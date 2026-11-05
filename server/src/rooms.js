@@ -129,6 +129,12 @@ function deleteElement(roomId, elementId) {
   room.strokes = room.strokes.filter((s) => s.id !== elementId);
 }
 
+function setRoomStrokes(roomId, strokes) {
+  const room = rooms.get(roomId);
+  if (!room || !Array.isArray(strokes)) return;
+  room.strokes = strokes;
+}
+
 function clearRoom(roomId) {
   const room = rooms.get(roomId);
   if (!room) return;
@@ -165,6 +171,7 @@ module.exports = {
   addElement,
   updateElement,
   deleteElement,
+  setRoomStrokes,
   clearRoom,
   addAiMessage,
   getAiHistory,

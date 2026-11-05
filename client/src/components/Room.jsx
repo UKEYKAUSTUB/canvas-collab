@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Sparkles, Copy, Check, LogOut } from 'lucide-react';
 import socket from '../socket.js';
 import Board from './Board.jsx';
@@ -15,6 +15,11 @@ export default function Room({ name, roomId, initialState, onLeave }) {
   const [aiOpen, setAiOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [confirmLeave, setConfirmLeave] = useState(false);
+
+  // Undo / Redo state
+  const boardRef = useRef(null);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
 
   function copyRoomId() {
     navigator.clipboard.writeText(roomId);
@@ -72,7 +77,7 @@ export default function Room({ name, roomId, initialState, onLeave }) {
             <button
               onClick={copyRoomId}
               title="Copy room code"
-              className="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition"
+              className="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition cursor-pointer"
             >
               {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
             </button>
@@ -81,7 +86,7 @@ export default function Room({ name, roomId, initialState, onLeave }) {
         <div className="flex items-center gap-3">
           <button
             onClick={() => setAiOpen((prev) => !prev)}
-            className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg transition border ${
+            className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg transition border cursor-pointer ${
               aiOpen
                 ? 'bg-indigo-50 border-indigo-200 text-indigo-600'
                 : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
@@ -93,14 +98,14 @@ export default function Room({ name, roomId, initialState, onLeave }) {
           </button>
           <div className="flex items-center gap-1.5">
             <span className="inline-block w-2 h-2 rounded-full bg-green-400"></span>
-                      <button
-            onClick={handleLeaveClick}
-            title="Leave room"
-            className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition"
-          >
-            <LogOut size={14} />
-            <span>Leave</span>
-          </button>
+            <button
+              onClick={handleLeaveClick}
+              title="Leave room"
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition cursor-pointer"
+            >
+              <LogOut size={14} />
+              <span>Leave</span>
+            </button>
             <span className="text-sm text-gray-500">
               {userCount} {userCount === 1 ? 'user' : 'users'}
             </span>
@@ -109,37 +114,42 @@ export default function Room({ name, roomId, initialState, onLeave }) {
       </header>
 
       <div className="relative flex-1 overflow-hidden">
-              {confirmLeave && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-xs">
-            <h3 className="text-base font-semibold text-gray-800 mb-1">Leave this room?</h3>
-            <p className="text-sm text-gray-500 mb-5">
-              You are the last person here. The board and AI chat will be erased.
-            </p>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setConfirmLeave(false)}
-                className="px-3 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100 transition"
-              >
-                Stay
-              </button>
-              <button
-                onClick={doLeave}
-                className="px-3 py-1.5 text-sm rounded-lg bg-red-500 hover:bg-red-600 text-white transition"
-              >
-                Leave
-              </button>
+        {confirmLeave && (
+          <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-xs">
+              <h3 className="text-base font-semibold text-gray-800 mb-1">Leave this room?</h3>
+              <p className="text-sm text-gray-500 mb-5">
+                You are the last person here. The board and AI chat will be erased.
+              </p>
+              <div className="flex gap-2 justify-end">
+                <button
+                  onClick={() => setConfirmLeave(false)}
+                  className="px-3 py-1.5 text-sm rounded-lg text-gray-600 hover:bg-gray-100 transition cursor-pointer"
+                >
+                  Stay
+                </button>
+                <button
+                  onClick={doLeave}
+                  className="px-3 py-1.5 text-sm rounded-lg bg-red-500 hover:bg-red-600 text-white transition cursor-pointer"
+                >
+                  Leave
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
         <Board
+          ref={boardRef}
           color={color}
           size={size}
           mode={mode}
           roomId={roomId}
           initialStrokes={initialState?.strokes}
           userName={name}
+          onHistoryChange={({ canUndo: u, canRedo: r }) => {
+            setCanUndo(u);
+            setCanRedo(r);
+          }}
         />
         <Toolbar
           color={color}
@@ -149,6 +159,10 @@ export default function Room({ name, roomId, initialState, onLeave }) {
           onSizeChange={setSize}
           onModeChange={setMode}
           roomId={roomId}
+          onUndo={() => boardRef.current?.undo()}
+          onRedo={() => boardRef.current?.redo()}
+          canUndo={canUndo}
+          canRedo={canRedo}
         />
         <VideoPanel
           localRef={localRef}

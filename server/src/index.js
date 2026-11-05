@@ -16,6 +16,7 @@ const {
   addElement,
   updateElement,
   deleteElement,
+  setRoomStrokes,
   clearRoom,
   addAiMessage,
   getAiHistory,
@@ -212,6 +213,12 @@ io.on('connection', (socket) => {
     if (!currentRoom) return;
     deleteElement(currentRoom, id);
     socket.to(currentRoom).emit('delete-element', { id });
+  });
+
+  socket.on('set-strokes', ({ strokes }) => {
+    if (!currentRoom) return;
+    setRoomStrokes(currentRoom, strokes);
+    socket.to(currentRoom).emit('room-state-sync', { strokes });
   });
 
   socket.on('cursor-move', (data) => {
