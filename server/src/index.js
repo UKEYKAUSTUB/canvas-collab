@@ -78,6 +78,11 @@ io.on('connection', (socket) => {
       userCount: getUserCount(id),
     });
 
+    socket.to(id).emit('user-joined-room', {
+      name: name || 'User',
+      userId: socket.id,
+    });
+
     io.to(id).emit('user-count', { count: getUserCount(id) });
   });
 
@@ -245,6 +250,8 @@ io.on('connection', (socket) => {
   socket.on('leave-room', () => {
     if (!currentRoom) return;
     const roomId = currentRoom;
+    const userName = getUserName(roomId, socket.id) || 'User';
+    socket.to(roomId).emit('user-left', { name: userName, userId: socket.id });
     socket.to(roomId).emit('remote-cursor-leave', { userId: socket.id });
     socket.leave(roomId);
     leaveRoom(roomId, socket.id);
@@ -254,9 +261,12 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     if (!currentRoom) return;
-    socket.to(currentRoom).emit('remote-cursor-leave', { userId: socket.id });
-    leaveRoom(currentRoom, socket.id);
-    io.to(currentRoom).emit('user-count', { count: getUserCount(currentRoom) });
+    const roomId = currentRoom;
+    const userName = getUserName(roomId, socket.id) || 'User';
+    socket.to(roomId).emit('user-left', { name: userName, userId: socket.id });
+    socket.to(roomId).emit('remote-cursor-leave', { userId: socket.id });
+    leaveRoom(roomId, socket.id);
+    io.to(roomId).emit('user-count', { count: getUserCount(roomId) });
   });
 });
 
