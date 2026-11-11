@@ -2,15 +2,21 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
-  {
-    urls: [
-      import.meta.env.VITE_TURN_URL_UDP,
-      import.meta.env.VITE_TURN_URL_TCP,
-      import.meta.env.VITE_TURN_URL_TLS,
-    ].filter(Boolean),
-    username: import.meta.env.VITE_TURN_USERNAME,
-    credential: import.meta.env.VITE_TURN_CREDENTIAL,
-  },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  ...(import.meta.env.VITE_TURN_URL_UDP || import.meta.env.VITE_TURN_URL_TCP
+    ? [
+        {
+          urls: [
+            import.meta.env.VITE_TURN_URL_UDP,
+            import.meta.env.VITE_TURN_URL_TCP,
+            import.meta.env.VITE_TURN_URL_TLS,
+          ].filter(Boolean),
+          username: import.meta.env.VITE_TURN_USERNAME,
+          credential: import.meta.env.VITE_TURN_CREDENTIAL,
+        },
+      ]
+    : []),
 ];
 
 const MEDIA_CONSTRAINTS = {
@@ -24,90 +30,165 @@ export function useWebRTC({ name, roomId, socket }) {
 
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null);
   const remoteSocketIdRef = useRef(null);
-  const pendingCandidatesRef = useRef([]);
+  const pendingRemoteCandidatesRef = useRef([]);
+  const pendingLocalCandidatesRef = useRef([]);
   const remoteDescSetRef = useRef(false);
 
+  const [localStream, setLocalStream] = useState(null);
+  const [remoteStream, setRemoteStream] = useState(null);
   const [micOn, setMicOn] = useState(true);
   const [cameraOn, setCameraOn] = useState(true);
   const [isConnected, setIsConnected] = useState(false);
   const [remoteMediaState, setRemoteMediaState] = useState({ micOn: true, cameraOn: true });
   const [mediaError, setMediaError] = useState(null);
 
-  // ─── Flush queued ICE candidates ───────────────────────────────────────────
-  const flushPendingCandidates = useCallback(async () => {
+  // ─── Attach local stream to video element whenever ready ───────────────────
+  useEffect(() => {
+    if (localRef.current && localStream) {
+      localRef.current.srcObject = localStream;
+      localRef.current.muted = true;
+      localRef.current.play().catch(() => {});
+    }
+  }, [localStream, cameraOn]);
+
+  // ─── Attach remote stream to video element whenever ready ──────────────────
+  useEffect(() => {
+    if (remoteRef.current && remoteStream) {
+      remoteRef.current.srcObject = remoteStream;
+      remoteRef.current.play().catch(() => {});
+    }
+  }, [remoteStream]);
+
+  // ─── Flush queued ICE candidates received from peer ────────────────────────
+  const flushPendingRemoteCandidates = useCallback(async () => {
     const pc = pcRef.current;
-    if (!pc) return;
-    const queued = pendingCandidatesRef.current.splice(0);
+    if (!pc || !pc.remoteDescription) return;
+    const queued = pendingRemoteCandidatesRef.current.splice(0);
     for (const c of queued) {
-      try { await pc.addIceCandidate(c); } catch (_) {}
+      try {
+        await pc.addIceCandidate(c);
+      } catch (_) {}
     }
   }, []);
 
+  // ─── Flush queued local ICE candidates to peer once socketId is known ─────
+  const flushPendingLocalCandidates = useCallback(() => {
+    if (!remoteSocketIdRef.current) return;
+    const queued = pendingLocalCandidatesRef.current.splice(0);
+    for (const candidate of queued) {
+      socket.emit('webrtc-ice-candidate', {
+        candidate,
+        to: remoteSocketIdRef.current,
+      });
+    }
+  }, [socket]);
+
   // ─── Build a fresh RTCPeerConnection ───────────────────────────────────────
-  const createPC = useCallback((stream) => {
-    if (pcRef.current) {
-      pcRef.current.close();
-    }
-    remoteDescSetRef.current = false;
-    pendingCandidatesRef.current = [];
-
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    pcRef.current = pc;
-
-    if (stream) {
-      // Add all local tracks
-      for (const track of stream.getTracks()) {
-        pc.addTrack(track, stream);
+  const createPC = useCallback(
+    (stream) => {
+      if (pcRef.current) {
+        pcRef.current.close();
       }
-    } else {
-      pc.addTransceiver('audio', { direction: 'recvonly' });
-      pc.addTransceiver('video', { direction: 'recvonly' });
-    }
+      remoteDescSetRef.current = false;
+      pendingRemoteCandidatesRef.current = [];
+      pendingLocalCandidatesRef.current = [];
 
-    // Remote track → remoteRef video element
-    pc.ontrack = (e) => {
-      if (remoteRef.current && e.streams[0]) {
-        remoteRef.current.srcObject = e.streams[0];
+      const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+      pcRef.current = pc;
+
+      if (stream) {
+        for (const track of stream.getTracks()) {
+          pc.addTrack(track, stream);
+        }
+      } else {
+        pc.addTransceiver('audio', { direction: 'recvonly' });
+        pc.addTransceiver('video', { direction: 'recvonly' });
       }
-    };
 
-    // ICE candidate ready → relay to peer
-    pc.onicecandidate = (e) => {
-      if (e.candidate && remoteSocketIdRef.current) {
-        socket.emit('webrtc-ice-candidate', {
-          candidate: e.candidate,
-          to: remoteSocketIdRef.current,
-        });
+      // Handle incoming remote track
+      pc.ontrack = (e) => {
+        let incomingStream = e.streams && e.streams[0];
+        if (!incomingStream) {
+          if (!remoteStreamRef.current) {
+            remoteStreamRef.current = new MediaStream();
+          }
+          remoteStreamRef.current.addTrack(e.track);
+          incomingStream = remoteStreamRef.current;
+        } else {
+          remoteStreamRef.current = incomingStream;
+        }
+
+        setRemoteStream(incomingStream);
+        if (remoteRef.current) {
+          remoteRef.current.srcObject = incomingStream;
+          remoteRef.current.play().catch(() => {});
+        }
+      };
+
+      // Handle ICE candidates
+      pc.onicecandidate = (e) => {
+        if (!e.candidate) return;
+        if (remoteSocketIdRef.current) {
+          socket.emit('webrtc-ice-candidate', {
+            candidate: e.candidate,
+            to: remoteSocketIdRef.current,
+          });
+        } else {
+          pendingLocalCandidatesRef.current.push(e.candidate);
+        }
+      };
+
+      const updateConnectionState = () => {
+        const isConn =
+          pc.connectionState === 'connected' ||
+          pc.iceConnectionState === 'connected' ||
+          pc.iceConnectionState === 'completed';
+
+        setIsConnected(isConn);
+
+        if (
+          pc.connectionState === 'failed' ||
+          pc.connectionState === 'disconnected' ||
+          pc.connectionState === 'closed'
+        ) {
+          if (
+            pc.iceConnectionState !== 'connected' &&
+            pc.iceConnectionState !== 'completed'
+          ) {
+            setIsConnected(false);
+            if (remoteRef.current) remoteRef.current.srcObject = null;
+            setRemoteStream(null);
+          }
+        }
+      };
+
+      pc.onconnectionstatechange = updateConnectionState;
+      pc.oniceconnectionstatechange = updateConnectionState;
+
+      return pc;
+    },
+    [socket]
+  );
+
+  // ─── Create and send offer (called by existing user) ──────────────────────
+  const makeOffer = useCallback(
+    async (toSocketId) => {
+      const pc = pcRef.current;
+      if (!pc) return;
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit('webrtc-offer', { sdp: pc.localDescription, to: toSocketId });
+      } catch (err) {
+        console.error('makeOffer failed:', err);
       }
-    };
+    },
+    [socket]
+  );
 
-    pc.onconnectionstatechange = () => {
-      const state = pc.connectionState;
-      setIsConnected(state === 'connected');
-      if (state === 'failed' || state === 'disconnected' || state === 'closed') {
-        setIsConnected(false);
-        if (remoteRef.current) remoteRef.current.srcObject = null;
-      }
-    };
-
-    return pc;
-  }, [socket]);
-
-  // ─── Create and send offer (called by the existing user) ──────────────────
-  const makeOffer = useCallback(async (toSocketId) => {
-    const pc = pcRef.current;
-    if (!pc) return;
-    try {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('webrtc-offer', { sdp: pc.localDescription, to: toSocketId });
-    } catch (err) {
-      console.error('makeOffer failed:', err);
-    }
-  }, [socket]);
-
-  // ─── Main effect: register socket listeners first, then acquire media ─────
+  // ─── Main media setup & WebRTC signaling effect ───────────────────────────
   useEffect(() => {
     let active = true;
     let resolveReady;
@@ -124,17 +205,18 @@ export function useWebRTC({ name, roomId, socket }) {
       });
     }
 
-    // Existing user: a newcomer is ready → become the offerer
+    // Existing user: newcomer joined → become the offerer
     async function onUserJoined({ socketId }) {
       await mediaReady;
       if (!active) return;
       remoteSocketIdRef.current = socketId;
       createPC(localStreamRef.current);
+      flushPendingLocalCandidates();
       sendMyMediaState(socketId);
       await makeOffer(socketId);
     }
 
-    // Newcomer: receive the offer, send the answer
+    // Newcomer: receive offer, send answer
     async function onOffer({ sdp, from }) {
       await mediaReady;
       if (!active) return;
@@ -144,7 +226,8 @@ export function useWebRTC({ name, roomId, socket }) {
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
         remoteDescSetRef.current = true;
-        await flushPendingCandidates();
+        await flushPendingRemoteCandidates();
+        flushPendingLocalCandidates();
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         socket.emit('webrtc-answer', { sdp: pc.localDescription, to: from });
@@ -154,7 +237,7 @@ export function useWebRTC({ name, roomId, socket }) {
       }
     }
 
-    // Offerer: receive the answer
+    // Offerer: receive answer
     async function onAnswer({ sdp }) {
       await mediaReady;
       if (!active) return;
@@ -163,7 +246,8 @@ export function useWebRTC({ name, roomId, socket }) {
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
         remoteDescSetRef.current = true;
-        await flushPendingCandidates();
+        await flushPendingRemoteCandidates();
+        flushPendingLocalCandidates();
       } catch (err) {
         console.error('onAnswer failed:', err);
       }
@@ -175,10 +259,12 @@ export function useWebRTC({ name, roomId, socket }) {
       if (!active || !candidate) return;
       const pc = pcRef.current;
       if (!pc) return;
-      if (!remoteDescSetRef.current) {
-        pendingCandidatesRef.current.push(new RTCIceCandidate(candidate));
+      if (!remoteDescSetRef.current || !pc.remoteDescription) {
+        pendingRemoteCandidatesRef.current.push(new RTCIceCandidate(candidate));
       } else {
-        try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (_) {}
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (_) {}
       }
     }
 
@@ -188,7 +274,7 @@ export function useWebRTC({ name, roomId, socket }) {
       setRemoteMediaState({ micOn: m, cameraOn: c });
     }
 
-    // Listeners go live immediately (before we wait for camera/mic)
+    // Register signaling listeners immediately
     socket.on('user-joined', onUserJoined);
     socket.on('webrtc-offer', onOffer);
     socket.on('webrtc-answer', onAnswer);
@@ -199,15 +285,29 @@ export function useWebRTC({ name, roomId, socket }) {
       let stream = null;
       try {
         stream = await navigator.mediaDevices.getUserMedia(MEDIA_CONSTRAINTS);
+        if (active) {
+          setCameraOn(true);
+          setMicOn(true);
+          setMediaError(null);
+        }
       } catch (err) {
-        // Camera busy or denied → try audio only before giving up
+        console.warn('Full video+audio getUserMedia failed:', err.name);
         try {
           stream = await navigator.mediaDevices.getUserMedia({
             audio: MEDIA_CONSTRAINTS.audio,
           });
-          if (active) setCameraOn(false);
+          if (active) {
+            setCameraOn(false);
+            setMicOn(true);
+            setMediaError('Camera unavailable or in use by another tab. Microphone active.');
+          }
         } catch (err2) {
-          if (active) setMediaError(`Camera/mic unavailable (${err2.name}). Whiteboard still works.`);
+          console.warn('Audio fallback getUserMedia failed:', err2.name);
+          if (active) {
+            setCameraOn(false);
+            setMicOn(false);
+            setMediaError(`Camera/mic permission denied or in use (${err2.name}).`);
+          }
         }
       }
 
@@ -218,13 +318,17 @@ export function useWebRTC({ name, roomId, socket }) {
       }
 
       localStreamRef.current = stream;
+      setLocalStream(stream);
+
       if (stream && localRef.current) {
         localRef.current.srcObject = stream;
+        localRef.current.muted = true;
+        localRef.current.play().catch(() => {});
       }
 
       createPC(stream);
       resolveReady();
-      socket.emit('call-ready'); // tell the other user we can receive an offer now
+      socket.emit('call-ready');
     }
 
     init();
@@ -251,11 +355,11 @@ export function useWebRTC({ name, roomId, socket }) {
       if (remoteRef.current) remoteRef.current.srcObject = null;
 
       remoteSocketIdRef.current = null;
-      pendingCandidatesRef.current = [];
+      pendingRemoteCandidatesRef.current = [];
+      pendingLocalCandidatesRef.current = [];
       remoteDescSetRef.current = false;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [createPC, flushPendingLocalCandidates, flushPendingRemoteCandidates, makeOffer, socket]);
 
   // ─── Media toggles ────────────────────────────────────────────────────────
   const toggleMic = useCallback(() => {
@@ -271,22 +375,47 @@ export function useWebRTC({ name, roomId, socket }) {
     }
   }, [micOn, cameraOn, socket]);
 
-  const toggleCamera = useCallback(() => {
+  const toggleCamera = useCallback(async () => {
     const stream = localStreamRef.current;
     if (!stream) return;
     const videoTrack = stream.getVideoTracks()[0];
-    if (!videoTrack) return;
-    const next = !cameraOn;
-    videoTrack.enabled = next;
-    setCameraOn(next);
-    if (remoteSocketIdRef.current) {
-      socket.emit('media-state', { micOn, cameraOn: next, to: remoteSocketIdRef.current });
+
+    // If video track exists, toggle enabled
+    if (videoTrack) {
+      const next = !cameraOn;
+      videoTrack.enabled = next;
+      setCameraOn(next);
+      if (remoteSocketIdRef.current) {
+        socket.emit('media-state', { micOn, cameraOn: next, to: remoteSocketIdRef.current });
+      }
+    } else if (!cameraOn) {
+      // User didn't have video track earlier, try to re-acquire camera
+      try {
+        const newStream = await navigator.mediaDevices.getUserMedia({ video: MEDIA_CONSTRAINTS.video });
+        const newTrack = newStream.getVideoTracks()[0];
+        if (newTrack) {
+          stream.addTrack(newTrack);
+          if (pcRef.current) {
+            pcRef.current.addTrack(newTrack, stream);
+          }
+          setCameraOn(true);
+          setLocalStream(stream);
+          setMediaError(null);
+          if (remoteSocketIdRef.current) {
+            socket.emit('media-state', { micOn, cameraOn: true, to: remoteSocketIdRef.current });
+          }
+        }
+      } catch (err) {
+        setMediaError(`Could not access camera (${err.name}).`);
+      }
     }
   }, [cameraOn, micOn, socket]);
 
   return {
     localRef,
     remoteRef,
+    localStream,
+    remoteStream,
     micOn,
     cameraOn,
     toggleMic,

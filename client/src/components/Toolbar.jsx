@@ -9,6 +9,8 @@ import {
   ArrowRight,
   Triangle,
   Eraser,
+  Undo2,
+  Redo2,
   Trash2,
 } from 'lucide-react';
 import socket from '../socket.js';
@@ -44,6 +46,10 @@ export default function Toolbar({
   onSizeChange,
   onModeChange,
   roomId,
+  onUndo,
+  onRedo,
+  canUndo = false,
+  canRedo = false,
 }) {
   function handleClear() {
     socket.emit('clear-board');
@@ -61,6 +67,23 @@ export default function Toolbar({
         return;
       }
 
+      // Undo: Ctrl+Z / Cmd+Z
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        onUndo?.();
+        return;
+      }
+
+      // Redo: Ctrl+Y / Cmd+Y or Ctrl+Shift+Z / Cmd+Shift+Z
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))
+      ) {
+        e.preventDefault();
+        onRedo?.();
+        return;
+      }
+
       const key = e.key.toLowerCase();
       if (key === 'v') onModeChange('select');
       else if (key === 'p') onModeChange('pen');
@@ -74,7 +97,7 @@ export default function Toolbar({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onModeChange]);
+  }, [onModeChange, onUndo, onRedo]);
 
   return (
     <div
@@ -199,7 +222,7 @@ export default function Toolbar({
 
       <div className="w-full h-px bg-gray-100 max-sm:w-px max-sm:h-auto max-sm:self-stretch" />
 
-      {/* Eraser and Clear Board */}
+      {/* Eraser */}
       <div className="flex flex-col gap-1 items-center max-sm:flex-row">
         <button
           type="button"
@@ -213,6 +236,39 @@ export default function Toolbar({
             }`}
         >
           <Eraser size={16} />
+        </button>
+      </div>
+
+      <div className="w-full h-px bg-gray-100 max-sm:w-px max-sm:h-auto max-sm:self-stretch" />
+
+      {/* Undo, Redo, Clear Board */}
+      <div className="flex flex-col gap-1 items-center max-sm:flex-row">
+        <button
+          type="button"
+          title="Undo (Ctrl+Z)"
+          disabled={!canUndo}
+          onClick={onUndo}
+          className={`flex items-center justify-center w-7 h-7 rounded-lg transition ${
+            canUndo
+              ? 'text-gray-600 hover:bg-gray-100 hover:text-gray-800 cursor-pointer'
+              : 'text-gray-300 cursor-not-allowed'
+          }`}
+        >
+          <Undo2 size={16} />
+        </button>
+
+        <button
+          type="button"
+          title="Redo (Ctrl+Y)"
+          disabled={!canRedo}
+          onClick={onRedo}
+          className={`flex items-center justify-center w-7 h-7 rounded-lg transition ${
+            canRedo
+              ? 'text-gray-600 hover:bg-gray-100 hover:text-gray-800 cursor-pointer'
+              : 'text-gray-300 cursor-not-allowed'
+          }`}
+        >
+          <Redo2 size={16} />
         </button>
 
         <button

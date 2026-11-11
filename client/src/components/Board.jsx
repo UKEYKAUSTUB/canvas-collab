@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { Check, X } from 'lucide-react';
 import socket from '../socket.js';
 
@@ -219,7 +219,6 @@ function drawSelectionBox(ctx, el) {
   ctx.save();
 
   if (el.type === 'line' || el.type === 'arrow') {
-    // For line and arrow: draw endpoint circle handles
     for (const handle of handles) {
       ctx.beginPath();
       ctx.arc(handle.x, handle.y, 6, 0, Math.PI * 2);
@@ -233,7 +232,6 @@ function drawSelectionBox(ctx, el) {
     return;
   }
 
-  // Draw dashed bounding box
   const tl = handles.find((h) => h.id === 'tl');
   const br = handles.find((h) => h.id === 'br');
   if (tl && br) {
@@ -245,7 +243,6 @@ function drawSelectionBox(ctx, el) {
     ctx.strokeRect(tl.x, tl.y, boxW, boxH);
   }
 
-  // Draw square resize handles
   ctx.setLineDash([]);
   const handleSize = 8;
   for (const handle of handles) {
@@ -267,6 +264,14 @@ function drawSelectionBox(ctx, el) {
   }
 
   ctx.restore();
+}
+
+// Deep clone strokes array
+function cloneStrokes(strokes) {
+  return strokes.map((s) => ({
+    ...s,
+    points: s.points ? s.points.map((p) => ({ ...p })) : undefined,
+  }));
 }
 
 // Draw any element (stroke, shape, or text)
@@ -443,7 +448,10 @@ function redrawAll(ctx, strokes, selectedId = null) {
   }
 }
 
-export default function Board({ color, size, mode, roomId, initialStrokes, userName }) {
+const Board = forwardRef(function Board(
+  { color, size, mode, roomId, initialStrokes, userName, onHistoryChange },
+  ref
+) {
   const canvasRef = useRef(null);
   const strokesRef = useRef(
     initialStrokes
@@ -454,6 +462,10 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
         }))
       : []
   );
+
+  // Undo / Redo history stacks
+  const undoStackRef = useRef([]);
+  const redoStackRef = useRef([]);
 
   const isDrawingRef = useRef(false);
   const pendingPointsRef = useRef([]);
@@ -482,23 +494,72 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
   const isMovingRef = useRef(false);
   const dragMoveStartRef = useRef(null);
   const initialElementCoordsRef = useRef(null);
+  const dragInitialSnapshotRef = useRef(null);
   const [isHoveringMovable, setIsHoveringMovable] = useState(false);
 
   // Resizing state
   const isResizingRef = useRef(false);
   const activeHandleRef = useRef(null);
   const resizeSnapRef = useRef(null);
+  const resizeInitialSnapshotRef = useRef(null);
   const [hoverHandleCursor, setHoverHandleCursor] = useState(null);
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
 
+  const updateHistoryState = useCallback(() => {
+    onHistoryChange?.({
+      canUndo: undoStackRef.current.length > 0,
+      canRedo: redoStackRef.current.length > 0,
+    });
+  }, [onHistoryChange]);
+
+  const saveHistorySnapshot = useCallback(() => {
+    const currentSnapshot = cloneStrokes(strokesRef.current);
+    undoStackRef.current.push(currentSnapshot);
+    if (undoStackRef.current.length > 40) {
+      undoStackRef.current.shift();
+    }
+    redoStackRef.current = [];
+    updateHistoryState();
+  }, [updateHistoryState]);
+
   const getCtx = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
     return canvas.getContext('2d');
   }, []);
+
+  const undo = useCallback(() => {
+    if (undoStackRef.current.length === 0) return;
+    const previous = undoStackRef.current.pop();
+    redoStackRef.current.push(cloneStrokes(strokesRef.current));
+    strokesRef.current = previous;
+    setSelectedId(null);
+    selectedIdRef.current = null;
+    setHoverHandleCursor(null);
+    const ctx = getCtx();
+    if (ctx) redrawAll(ctx, strokesRef.current, null);
+    updateHistoryState();
+    socket.emit('set-strokes', { strokes: previous });
+  }, [getCtx, updateHistoryState]);
+
+  const redo = useCallback(() => {
+    if (redoStackRef.current.length === 0) return;
+    const next = redoStackRef.current.pop();
+    undoStackRef.current.push(cloneStrokes(strokesRef.current));
+    strokesRef.current = next;
+    setSelectedId(null);
+    selectedIdRef.current = null;
+    setHoverHandleCursor(null);
+    const ctx = getCtx();
+    if (ctx) redrawAll(ctx, strokesRef.current, null);
+    updateHistoryState();
+    socket.emit('set-strokes', { strokes: next });
+  }, [getCtx, updateHistoryState]);
+
+  useImperativeHandle(ref, () => ({ undo, redo }), [undo, redo]);
 
   const resizeCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -534,7 +595,7 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
     }
   }, [mode, getCtx]);
 
-  // Delete selected element with Delete or Backspace key
+  // Keyboard shortcuts: Delete/Backspace to delete, Ctrl+Z to undo, Ctrl+Y to redo
   useEffect(() => {
     function handleKeyDown(e) {
       if (
@@ -544,8 +605,25 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
       ) {
         return;
       }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+        return;
+      }
+
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        (e.key.toLowerCase() === 'y' || (e.shiftKey && e.key.toLowerCase() === 'z'))
+      ) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIdRef.current) {
         const idToDelete = selectedIdRef.current;
+        saveHistorySnapshot();
         strokesRef.current = strokesRef.current.filter((s) => s.id !== idToDelete);
         setSelectedId(null);
         selectedIdRef.current = null;
@@ -557,7 +635,7 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [getCtx]);
+  }, [undo, redo, saveHistorySnapshot, getCtx]);
 
   // Socket event listeners
   useEffect(() => {
@@ -638,7 +716,22 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
       if (ctx) redrawAll(ctx, strokesRef.current, selectedIdRef.current);
     }
 
+    function onRoomStateSync({ strokes }) {
+      strokesRef.current = strokes.map((s) => ({
+        ...s,
+        id: s.id || `el-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        points: s.points ? s.points.map((p) => ({ ...p })) : undefined,
+      }));
+      const ctx = getCtx();
+      if (ctx) redrawAll(ctx, strokesRef.current, selectedIdRef.current);
+    }
+
     function onClearBoard() {
+      if (strokesRef.current.length > 0) {
+        undoStackRef.current.push(cloneStrokes(strokesRef.current));
+        redoStackRef.current = [];
+        updateHistoryState();
+      }
       strokesRef.current = [];
       setSelectedId(null);
       selectedIdRef.current = null;
@@ -674,6 +767,7 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
     socket.on('add-element', onAddElement);
     socket.on('update-element', onUpdateElement);
     socket.on('delete-element', onDeleteElement);
+    socket.on('room-state-sync', onRoomStateSync);
     socket.on('clear-board', onClearBoard);
     socket.on('remote-cursor', onRemoteCursor);
     socket.on('remote-cursor-leave', onRemoteCursorLeave);
@@ -686,11 +780,12 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
       socket.off('add-element', onAddElement);
       socket.off('update-element', onUpdateElement);
       socket.off('delete-element', onDeleteElement);
+      socket.off('room-state-sync', onRoomStateSync);
       socket.off('clear-board', onClearBoard);
       socket.off('remote-cursor', onRemoteCursor);
       socket.off('remote-cursor-leave', onRemoteCursorLeave);
     };
-  }, [getCtx]);
+  }, [getCtx, updateHistoryState]);
 
   const flushPoints = useCallback(() => {
     rafRef.current = null;
@@ -709,6 +804,7 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
     if (!editingText) return;
     const trimmed = (editingText.text || '').trim();
     if (trimmed.length > 0) {
+      saveHistorySnapshot();
       if (editingText.id) {
         // Updating existing text
         const idx = strokesRef.current.findIndex((s) => s.id === editingText.id);
@@ -739,7 +835,7 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
       if (ctx) redrawAll(ctx, strokesRef.current, selectedIdRef.current);
     }
     setEditingText(null);
-  }, [editingText, getCtx]);
+  }, [editingText, getCtx, saveHistorySnapshot]);
 
   // If mode changes while typing text, commit text
   useEffect(() => {
@@ -808,6 +904,7 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
               e.currentTarget.setPointerCapture(e.pointerId);
               isResizingRef.current = true;
               activeHandleRef.current = clickedHandle.id;
+              resizeInitialSnapshotRef.current = cloneStrokes(strokesRef.current);
 
               if (selectedEl.type === 'line' || selectedEl.type === 'arrow') {
                 resizeSnapRef.current = {
@@ -852,6 +949,7 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
           selectedIdRef.current = foundEl.id;
           isMovingRef.current = true;
           dragMoveStartRef.current = { x: nx, y: ny };
+          dragInitialSnapshotRef.current = cloneStrokes(strokesRef.current);
 
           if (foundEl.type === 'text') {
             initialElementCoordsRef.current = { x: foundEl.x, y: foundEl.y };
@@ -906,6 +1004,7 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
       }
 
       // PEN AND ERASER MODES
+      saveHistorySnapshot();
       pendingPointsRef.current = [];
       lastLocalPointRef.current = null;
 
@@ -925,7 +1024,7 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
       pendingPointsRef.current.push({ x: nx, y: ny });
       scheduleFlush();
     },
-    [color, size, mode, editingText, commitText, getCtx, scheduleFlush]
+    [color, size, mode, editingText, commitText, saveHistorySnapshot, getCtx, scheduleFlush]
   );
 
   const onPointerMove = useCallback(
@@ -1118,6 +1217,12 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
       isResizingRef.current = false;
       activeHandleRef.current = null;
       resizeSnapRef.current = null;
+      if (resizeInitialSnapshotRef.current) {
+        undoStackRef.current.push(resizeInitialSnapshotRef.current);
+        redoStackRef.current = [];
+        updateHistoryState();
+        resizeInitialSnapshotRef.current = null;
+      }
       const el = strokesRef.current.find((s) => s.id === selectedIdRef.current);
       if (el) {
         socket.emit('update-element', el);
@@ -1130,6 +1235,12 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
       isMovingRef.current = false;
       dragMoveStartRef.current = null;
       initialElementCoordsRef.current = null;
+      if (dragInitialSnapshotRef.current) {
+        undoStackRef.current.push(dragInitialSnapshotRef.current);
+        redoStackRef.current = [];
+        updateHistoryState();
+        dragInitialSnapshotRef.current = null;
+      }
       const el = strokesRef.current.find((s) => s.id === selectedIdRef.current);
       if (el) {
         socket.emit('update-element', el);
@@ -1148,6 +1259,7 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
       const dist = Math.hypot(p1.x - p0.x, p1.y - p0.y);
 
       if (dist > 0.003) {
+        saveHistorySnapshot();
         strokesRef.current.push(previewShapeRef.current);
         socket.emit('add-element', previewShapeRef.current);
       }
@@ -1168,7 +1280,7 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
     }
     socket.emit('stroke-end');
     lastLocalPointRef.current = null;
-  }, [mode, getCtx]);
+  }, [mode, getCtx, saveHistorySnapshot, updateHistoryState]);
 
   const onPointerLeave = useCallback(() => {
     setHoverCursor(null);
@@ -1330,4 +1442,6 @@ export default function Board({ color, size, mode, roomId, initialStrokes, userN
       )}
     </div>
   );
-}
+});
+
+export default Board;
